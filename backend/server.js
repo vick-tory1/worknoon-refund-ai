@@ -1,6 +1,8 @@
 const express = require("express");
 const cors = require("cors");
-require("dotenv").config();
+const path = require("path");
+
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const refundRoutes = require("./routes/refundRoutes");
 const customerRoutes = require("./routes/customerRoutes");
@@ -18,6 +20,7 @@ app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
     service: "Worknoon Refund AI API",
+    demoAiMode: process.env.DEMO_AI_MODE === "true",
   });
 });
 

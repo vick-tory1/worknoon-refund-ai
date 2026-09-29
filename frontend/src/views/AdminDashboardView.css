@@ -1,0 +1,32 @@
+.admin-grid {
+  display: block;
+  max-width: 1120px;
+  min-height: 0;
+  margin-inline: auto;
+}
+
+.admin-grid:not(.admin-grid--selected) .table-wrap {
+  border-right: 0;
+}
+
+.admin-grid--selected {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(330px, 0.85fr);
+  max-width: none;
+  min-height: 500px;
+}
+
+.admin-grid--selected .table-wrap {
+  border-right: 1px solid var(--line);
+}
+
+@media (max-width: 900px) {
+  .admin-grid--selected {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-grid--selected .table-wrap {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}

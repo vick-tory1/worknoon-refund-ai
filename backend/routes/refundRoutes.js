@@ -127,16 +127,20 @@ router.post("/", async (req, res) => {
 
     res.status(201).json(result);
   } catch (error) {
-    const status = error.status;
+    const clientErrors = new Set([
+      "Customer not found.",
+      "Order not found for this customer.",
+      "Refund reason is required.",
+      "Requested amount must be greater than zero.",
+      "Requested amount cannot exceed the order amount.",
+    ]);
 
-    if (status === 500 || status === 503) {
-      return res.status(503).json({
-        error: "The refund service is temporarily unavailable. Please try again.",
-      });
+    if (clientErrors.has(error.message)) {
+      return res.status(400).json({ error: error.message });
     }
 
-    res.status(400).json({
-      error: error.message,
+    res.status(500).json({
+      error: "Something went wrong while processing your request. Please try again.",
     });
   }
 });

@@ -1,6 +1,32 @@
 const db = require("../database/db");
 const { evaluateRefundPolicy } = require("../policy/refundPolicy");
-const { analyzeRefundRequest } = require("./aiService");
+const aiService = require("./aiService");
+
+const AI_UNAVAILABLE_CUSTOMER_MESSAGE =
+  "Your request has been received, but it can't be approved right now. It has been escalated to the appropriate team. We will have someone reach out to you as soon as possible.";
+const AI_UNAVAILABLE_INTERNAL_REASON =
+  "AI assistance is unavailable because the configured Gemini model could not respond.";
+
+function buildCustomerResponse({ orderNumber, decision, reasons, aiUnavailable }) {
+  if (aiUnavailable) {
+    return AI_UNAVAILABLE_CUSTOMER_MESSAGE;
+  }
+
+  const safeOrderNumber = String(orderNumber || "your order").trim();
+  const decisionLabel = decision[0] + decision.slice(1).toLowerCase();
+  const reason = reasons.join(" ");
+  const acknowledgement = `We received your refund request for order ${safeOrderNumber}. Decision: ${decisionLabel}.`;
+
+  if (decision === "ESCALATED") {
+    return `${acknowledgement} Human review is required because ${reason} A support specialist will review your request. Next step: wait for the specialist's follow-up.`;
+  }
+
+  if (decision === "APPROVED") {
+    return `${acknowledgement} Reason: ${reason} Next step: we will process the refund to the original payment method.`;
+  }
+
+  return `${acknowledgement} Reason: ${reason} Next step: no refund will be issued; contact support with your order number if you need help.`;
+}
 
 async function processRefundRequest({
   customerId,
@@ -48,24 +74,53 @@ async function processRefundRequest({
     hasConflictingInformation,
   });
 
-  const aiResult = await analyzeRefundRequest({
-    customer,
-    order,
-    reason: reason.trim(),
-    policyDecision: policyResult.decision,
-    policyReasons: policyResult.reasons,
-  });
+  let decision = policyResult.decision;
+  let reasons = policyResult.reasons;
+  let aiUnavailable = false;
+  let aiResult;
+
+  try {
+    aiResult = await aiService.analyzeRefundRequest({
+      customer,
+      order,
+      reason: reason.trim(),
+      policyDecision: policyResult.decision,
+      policyReasons: policyResult.reasons,
+    });
+  } catch (_error) {
+    // Provider details are never persisted or returned to the customer.
+    decision = "ESCALATED";
+    reasons = [
+      ...policyResult.reasons,
+      AI_UNAVAILABLE_INTERNAL_REASON,
+    ];
+    aiUnavailable = true;
+    aiResult = {
+      classification: "NEEDS_HUMAN_REVIEW",
+      reasoning:
+        "AI assistance was unavailable, so the request was escalated for human review.",
+      customerResponse: AI_UNAVAILABLE_CUSTOMER_MESSAGE,
+    };
+  }
 
   const expectedClassification = {
     APPROVED: "ELIGIBLE",
     DENIED: "INELIGIBLE",
     ESCALATED: "NEEDS_HUMAN_REVIEW",
-  }[policyResult.decision];
+  }[decision];
 
-  const aiClassification =
-    aiResult.classification === expectedClassification
+  const aiClassification = aiUnavailable
+    ? expectedClassification
+    : aiResult.classification === expectedClassification
       ? aiResult.classification
       : expectedClassification;
+
+  const customerResponse = buildCustomerResponse({
+    orderNumber: order.order_number,
+    decision,
+    reasons,
+    aiUnavailable,
+  });
 
   const saveRefund = db.transaction(() => {
     const insertRefund = db.prepare(`
@@ -87,10 +142,10 @@ async function processRefundRequest({
       orderId,
       reason.trim(),
       requestedAmount,
-      policyResult.decision,
-      JSON.stringify(policyResult.reasons),
+      decision,
+      JSON.stringify(reasons),
       aiClassification,
-      aiResult.customerResponse
+      customerResponse
     );
 
     const refundRequestId = refundResult.lastInsertRowid;
@@ -113,13 +168,24 @@ async function processRefundRequest({
       })
     );
 
+    if (aiUnavailable) {
+      insertAudit.run(
+        refundRequestId,
+        "AI_UNAVAILABLE",
+        JSON.stringify({
+          outcome: "ESCALATED_FOR_HUMAN_REVIEW",
+          reason: AI_UNAVAILABLE_INTERNAL_REASON,
+        })
+      );
+    }
+
     insertAudit.run(
       refundRequestId,
       "AI_ANALYSIS",
       JSON.stringify({
         classification: aiClassification,
         reasoning: aiResult.reasoning,
-        customerResponse: aiResult.customerResponse,
+        customerResponse,
       })
     );
 
@@ -132,17 +198,20 @@ async function processRefundRequest({
     id: refundRequestId,
     customer,
     order,
-    decision: policyResult.decision,
-    reasons: policyResult.reasons,
+    decision,
+    reasons,
     requestedAmount,
+    aiUnavailable,
     ai: {
       classification: aiClassification,
       reasoning: aiResult.reasoning,
-      customerResponse: aiResult.customerResponse,
+      customerResponse,
     },
   };
 }
 
 module.exports = {
+  AI_UNAVAILABLE_CUSTOMER_MESSAGE,
+  AI_UNAVAILABLE_INTERNAL_REASON,
   processRefundRequest,
 };
